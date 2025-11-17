@@ -28,36 +28,70 @@ EchoMind focuses on **speed, simplicity, and visual clarity**:
 
 ---
 
-## 🧠 Planned Tech Stack (subject to change during hackathon)
+## 🧠 MVP Tech Stack
 
-- **Backend**
-  - Google **Gemini** – intent understanding & phrase generation
-  - **Qdrant** – storing and retrieving the child’s preferred phrases
-  - Python (FastAPI or similar)
-
-- **Frontend**
-  - **Streamlit** or **Gradio** – simple, clean UI for the demo
-
-- **Other**
-  - Text-to-Speech API for voice output
+- **Language**: Python
+- **Frontend + Logic**: Streamlit (`frontend/app.py`)
+- **LLM**: Google Gemini (phrase generation)
+- **TTS**: gTTS (converts the chosen phrase to audio)
+- **Env config**: `python-dotenv`
 
 ---
 
-## 🏗 Repository Structure (initial skeleton)
+## 🚀 Getting Started
 
-```bash
-backend/
-  main.py          # entry point (to be implemented)
-  gemini.py        # Gemini-related logic (to be implemented)
-  qdrant.py        # Qdrant-related logic (to be implemented)
-  tts.py           # text-to-speech logic (to be implemented)
-  requirements.txt # dependencies (to be filled during hackathon)
+1. **Install dependencies**
 
-frontend/
-  app.py           # UI logic (to be implemented)
-  icons/           # visual symbols (food, feelings, activities)
-  assets/          # logos, misc visuals
+   ```bash
+   pip install -r backend/requirements.txt
+   ```
 
-prompts/
-  suggestion_prompt.txt  # prompt drafts for AI suggestions
-  category_prompt.txt    # prompt drafts for category behaviour
+2. **Environment variables**
+
+   Create a `.env` file in the project root:
+
+   ```
+   GEMINI_API_KEY=your_key
+   GEMINI_MODEL=gemini-1.5-flash
+   ```
+
+3. **Images (optional but recommended)**
+
+   Add category images under `frontend/images/`:
+
+   ```
+   frontend/images/
+     food/
+       apple.png
+       snack.png
+     feelings/
+       calm.png
+       break.png
+     activities/
+       play.png
+       outside.png
+   ```
+
+   The app automatically pulls whatever files exist inside each folder; filenames do not need to match exactly.
+
+4. **Run Streamlit**
+
+   ```bash
+   streamlit run frontend/app.py
+   ```
+
+5. **Demo flow**
+
+   - Tap **“I want to speak.”**
+   - Choose **Food**, **Feelings**, or **Activities**.
+   - Review the **three Gemini-generated phrases** (each with an image or emoji).
+   - Tap one → **audio playback** uses gTTS.
+
+---
+
+## 🧩 Additional Notes
+
+- If Gemini is unavailable (no key or API error), the UI falls back to safe, static phrases per category.
+- Context (location + time of day + last spoken phrase) is automatically included in prompts so Gemini can stay literal and relevant.
+- `prompts/suggestion_prompt.txt` can be edited to tweak tone/format; the Streamlit app loads it automatically when it’s non-empty.
+- This MVP intentionally skips persistent storage (e.g., Qdrant) to keep hackathon setup fast. A future iteration can re-introduce personal memory without changing the UI flow.
