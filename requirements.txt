@@ -4,3 +4,4 @@ google-generativeai
 gtts
 Pillow
 streamlit-geolocation
+qdrant-client
