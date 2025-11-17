@@ -13,6 +13,8 @@ from dotenv import load_dotenv
 from gtts import gTTS
 import google.generativeai as genai
 
+import qdrant_manager
+
 # --- App bootstrap --------------------------------------------------------- #
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -80,6 +82,7 @@ def init_session_state() -> None:
         "options": [],
         "last_phrase": None,
         "audio_file": None,
+        "play_triggered": False,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -195,7 +198,17 @@ def parse_model_output(raw_text: str) -> List[Dict[str, str]]:
         cleaned = cleaned.split("\n", 1)[-1]
     
     data = json.loads(cleaned)
-    phrases = data.get("phrases", [])
+
+    # Handle two possible formats:
+    # Format 1: {"phrases": [...]} - dict with phrases key
+    # Format 2: [...] - direct list
+    if isinstance(data, dict):
+        phrases = data.get("phrases", [])
+    elif isinstance(data, list):
+        phrases = data
+    else:
+        raise ValueError(f"Expected dict or list, got {type(data).__name__}")
+
     if not isinstance(phrases, list):
         raise ValueError("Expected 'phrases' to be a list")
     
@@ -204,11 +217,15 @@ def parse_model_output(raw_text: str) -> List[Dict[str, str]]:
     
     result = []
     for item in phrases:
-        if not isinstance(item, dict):
-            raise ValueError(f"Expected phrase to be a dict, got {type(item).__name__}")
-        
-        text = item.get("text", "").strip()
-        emoji = item.get("emoji", "").strip()
+        # Handle both formats: dict with "text"/"emoji" or list [text, emoji]
+        if isinstance(item, dict):
+            text = item.get("text", "").strip()
+            emoji = item.get("emoji", "").strip()
+        elif isinstance(item, (list, tuple)) and len(item) >= 2:
+            text = str(item[0]).strip()
+            emoji = str(item[1]).strip()
+        else:
+            raise ValueError(f"Expected dict or [text, emoji] list, got {type(item).__name__}")
         
         if not text:
             raise ValueError("Phrase 'text' field is required and cannot be empty")
@@ -226,7 +243,7 @@ def generate_ai_options(category: str, context: Dict[str, str]) -> List[Dict[str
         st.error("Gemini model is not available.")
         st.stop()
         return []
-    
+
     prompt_template = load_prompt_template()
     context_lines = [
         f"Child ID: {context['child_id']}",
@@ -241,6 +258,19 @@ def generate_ai_options(category: str, context: Dict[str, str]) -> List[Dict[str
         context_lines.append(f"GPS coordinates: {context['latitude']}, {context['longitude']}")
     if context.get("last_phrase"):
         context_lines.append(f"Last phrase spoken: {context['last_phrase']}")
+
+    # Add personalization context from Qdrant if available
+    try:
+        if st.session_state.get("qdrant_initialized"):
+            personalization = qdrant_manager.get_personalization_context(
+                child_id=context["child_id"],
+                category=category,
+                context=context,
+            )
+            if personalization:
+                context_lines.append(f"Personalization: {personalization}")
+    except Exception as e:
+        print(f"Warning: Could not get personalization context: {e}")
 
     prompt = prompt_template.format(context="\n".join(context_lines))
 
@@ -308,6 +338,7 @@ def reset_flow() -> None:
     st.session_state.options = []
     st.session_state.last_phrase = None
     st.session_state.audio_file = None
+    st.session_state.play_triggered = False
 
 
 # --- UI Sections ----------------------------------------------------------- #
@@ -1116,8 +1147,9 @@ def render_categories() -> None:
             button_text = f"{emoji}\n\n{label}"
             if st.button(button_text, key=f"cat-{idx}", use_container_width=True):
                 st.session_state.selected_category = label
-                fetch_options(label)
-    
+                st.session_state.stage = "loading"
+                st.rerun()
+
     with col2:
         for idx in range(1, len(categories_list), 2):
             label, emoji = categories_list[idx]
@@ -1125,7 +1157,8 @@ def render_categories() -> None:
             button_text = f"{emoji}\n\n{label}"
             if st.button(button_text, key=f"cat-{idx}", use_container_width=True):
                 st.session_state.selected_category = label
-                fetch_options(label)
+                st.session_state.stage = "loading"
+                st.rerun()
     
     # Style back button - improved accessibility
     st.markdown("""
@@ -1222,6 +1255,20 @@ def render_phrase_options() -> None:
         if st.button(button_text, key=f"phrase-{idx}", use_container_width=True):
             st.session_state.last_phrase = option["text"]
             st.session_state.audio_file = synthesize_audio(option["text"])
+
+            # Store the phrase selection in Qdrant for personalization
+            try:
+                if st.session_state.get("qdrant_initialized"):
+                    context = build_context(st.session_state.selected_category)
+                    qdrant_manager.store_phrase(
+                        child_id=CHILD_ID,
+                        category=st.session_state.selected_category,
+                        phrase=option["text"],
+                        context=context,
+                    )
+            except Exception as e:
+                print(f"Warning: Could not store phrase in Qdrant: {e}")
+
             st.session_state.stage = "voice"
             st.rerun()
     
@@ -1361,8 +1408,11 @@ def render_voice_output() -> None:
         st.audio(st.session_state.audio_file, autoplay=True)
     
     if st.button("▶ Play again", key="play_again", use_container_width=True):
-        if st.session_state.audio_file:
-            st.audio(st.session_state.audio_file, autoplay=True)
+        st.session_state.play_triggered = True
+
+    # Show audio again if play button was clicked
+    if st.session_state.get("play_triggered", False) and st.session_state.audio_file:
+        st.audio(st.session_state.audio_file, autoplay=False)
     
     if st.button("← Back to \"I want to speak\"", key="back_home", use_container_width=True):
         reset_flow()
@@ -1374,7 +1424,16 @@ def render_voice_output() -> None:
 
 def main() -> None:
     init_session_state()
-    
+
+    # Initialize Qdrant on first run
+    if "qdrant_initialized" not in st.session_state:
+        try:
+            qdrant_manager.init_qdrant()
+            st.session_state.qdrant_initialized = True
+        except Exception as e:
+            st.warning(f"⚠️ Qdrant initialization failed: {e}. App will work without personalization.")
+            st.session_state.qdrant_initialized = False
+
     # Check for GPS data in query parameters (from JavaScript geolocation)
     query_params = st.query_params
     
@@ -1413,6 +1472,11 @@ def main() -> None:
         render_stage_intro()
     elif stage == "categories":
         render_categories()
+    elif stage == "loading":
+        # Fetch options and transition to phrases
+        st.spinner("Loading phrases...")
+        fetch_options(st.session_state.selected_category)
+        st.rerun()
     elif stage == "phrases":
         render_phrase_options()
     elif stage == "voice":
